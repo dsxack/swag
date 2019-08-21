@@ -1,8 +1,8 @@
 package composition
 
 import (
+	"github.com/dsxack/swag/testdata/composition/api"
 	"github.com/gin-gonic/gin"
-	"github.com/swaggo/swag/testdata/composition/api"
 )
 
 // @title Swagger Example API

@@ -1,8 +1,8 @@
 package api
 
 import (
+	"github.com/dsxack/swag/testdata/composition/common"
 	"github.com/gin-gonic/gin"
-	"github.com/swaggo/swag/testdata/composition/common"
 )
 
 type Foo struct {

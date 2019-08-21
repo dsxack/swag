@@ -3,9 +3,10 @@ package swag
 import (
 	"encoding/json"
 	"fmt"
-	"go/ast"
-	goparser "go/parser"
+	"github.com/dave/dst"
+	"github.com/dave/dst/decorator"
 	"go/token"
+	"golang.org/x/tools/go/packages"
 	"net/http"
 	"os"
 	"regexp"
@@ -14,11 +15,10 @@ import (
 
 	"github.com/go-openapi/jsonreference"
 	"github.com/go-openapi/spec"
-	"golang.org/x/tools/go/loader"
 )
 
 // Operation describes a single API operation on a path.
-// For more information: https://github.com/swaggo/swag#api-operation
+// For more information: https://github.com/dsxack/swag#api-operation
 type Operation struct {
 	HTTPMethod string
 	Path       string
@@ -56,7 +56,7 @@ func NewOperation() *Operation {
 }
 
 // ParseComment parses comment for given comment string and returns error if error occurs.
-func (operation *Operation) ParseComment(comment string, astFile *ast.File) error {
+func (operation *Operation) ParseComment(comment string, astFile *dst.File) error {
 	commentLine := strings.TrimSpace(strings.TrimLeft(comment, "//"))
 	if len(commentLine) == 0 {
 		return nil
@@ -130,7 +130,7 @@ var paramPattern = regexp.MustCompile(`(\S+)[\s]+([\w]+)[\s]+([\S.]+)[\s]+([\w]+
 // E.g. @Param	queryText		formData	      string	  true		        "The email for login"
 //              [param name]    [paramType] [data type]  [is mandatory?]   [Comment]
 // E.g. @Param   some_id     path    int     true        "Some ID"
-func (operation *Operation) ParseParamComment(commentLine string, astFile *ast.File) error {
+func (operation *Operation) ParseParamComment(commentLine string, astFile *dst.File) error {
 	matches := paramPattern.FindStringSubmatch(commentLine)
 	if len(matches) != 6 {
 		return fmt.Errorf("missing required param comment parameters \"%s\"", commentLine)
@@ -215,7 +215,7 @@ func (operation *Operation) ParseParamComment(commentLine string, astFile *ast.F
 	return nil
 }
 
-func (operation *Operation) registerSchemaType(schemaType string, astFile *ast.File) error {
+func (operation *Operation) registerSchemaType(schemaType string, astFile *dst.File) error {
 	refSplit := strings.Split(schemaType, ".")
 	if len(refSplit) != 2 {
 		return nil
@@ -226,7 +226,7 @@ func (operation *Operation) registerSchemaType(schemaType string, astFile *ast.F
 		operation.parser.registerTypes[schemaType] = typeSpec
 		return nil
 	}
-	var typeSpec *ast.TypeSpec
+	var typeSpec *dst.TypeSpec
 	if astFile == nil {
 		return fmt.Errorf("can not register schema type: %q reason: astFile == nil", schemaType)
 	}
@@ -250,7 +250,7 @@ func (operation *Operation) registerSchemaType(schemaType string, astFile *ast.F
 	}
 
 	if _, ok := operation.parser.TypeDefinitions[pkgName]; !ok {
-		operation.parser.TypeDefinitions[pkgName] = make(map[string]*ast.TypeSpec)
+		operation.parser.TypeDefinitions[pkgName] = make(map[string]*dst.TypeSpec)
 	}
 
 	operation.parser.TypeDefinitions[pkgName][typeName] = typeSpec
@@ -481,38 +481,48 @@ func (operation *Operation) ParseSecurityComment(commentLine string) error {
 	return nil
 }
 
-// findTypeDef attempts to find the *ast.TypeSpec for a specific type given the
+// findTypeDef attempts to find the *dst.TypeSpec for a specific type given the
 // type's name and the package's import path
 // TODO: improve finding external pkg
-func findTypeDef(importPath, typeName string) (*ast.TypeSpec, error) {
+func findTypeDef(importPath, typeName string) (*dst.TypeSpec, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
 
-	conf := loader.Config{
-		ParserMode: goparser.SpuriousErrors,
-		Cwd:        cwd,
+	conf := &packages.Config{
+		Dir:  cwd,
+		Mode: packages.NeedSyntax,
 	}
 
-	conf.Import(importPath)
+	//conf.Import(importPath)
 
-	lprog, err := conf.Load()
+	//lprog, err := conf.Load()
+	//if err != nil {
+	//	return nil, err
+	//}
+
+	pkgs, err := decorator.Load(conf, "")
 	if err != nil {
 		return nil, err
 	}
 
+	var pkgInfo *decorator.Package
+
 	// If the pkg is vendored, the actual pkg path is going to resemble
 	// something like "{importPath}/vendor/{importPath}"
-	for k := range lprog.AllPackages {
-		realPkgPath := k.Path()
+	for _, k := range pkgs {
+		realPkgPath := k.PkgPath
 
 		if strings.Contains(realPkgPath, "vendor/"+importPath) {
-			importPath = realPkgPath
+			pkgInfo = k
+			break
+		}
+		if strings.Contains(realPkgPath, importPath) {
+			pkgInfo = k
+			break
 		}
 	}
-
-	pkgInfo := lprog.Package(importPath)
 
 	if pkgInfo == nil {
 		return nil, fmt.Errorf("package was nil")
@@ -520,11 +530,11 @@ func findTypeDef(importPath, typeName string) (*ast.TypeSpec, error) {
 
 	// TODO: possibly cache pkgInfo since it's an expensive operation
 
-	for i := range pkgInfo.Files {
-		for _, astDeclaration := range pkgInfo.Files[i].Decls {
-			if generalDeclaration, ok := astDeclaration.(*ast.GenDecl); ok && generalDeclaration.Tok == token.TYPE {
+	for i := range pkgInfo.Syntax {
+		for _, astDeclaration := range pkgInfo.Syntax[i].Decls {
+			if generalDeclaration, ok := astDeclaration.(*dst.GenDecl); ok && generalDeclaration.Tok == token.TYPE {
 				for _, astSpec := range generalDeclaration.Specs {
-					if typeSpec, ok := astSpec.(*ast.TypeSpec); ok {
+					if typeSpec, ok := astSpec.(*dst.TypeSpec); ok {
 						if typeSpec.Name.String() == typeName {
 							return typeSpec, nil
 						}
@@ -539,7 +549,7 @@ func findTypeDef(importPath, typeName string) (*ast.TypeSpec, error) {
 var responsePattern = regexp.MustCompile(`([\d]+)[\s]+([\w\{\}]+)[\s]+([\w\-\.\/]+)[^"]*(.*)?`)
 
 // ParseResponseComment parses comment for gived `response` comment string.
-func (operation *Operation) ParseResponseComment(commentLine string, astFile *ast.File) error {
+func (operation *Operation) ParseResponseComment(commentLine string, astFile *dst.File) error {
 	var matches []string
 
 	if matches = responsePattern.FindStringSubmatch(commentLine); len(matches) != 5 {
@@ -614,7 +624,7 @@ func (operation *Operation) ParseResponseComment(commentLine string, astFile *as
 }
 
 // ParseResponseHeaderComment parses comment for gived `response header` comment string.
-func (operation *Operation) ParseResponseHeaderComment(commentLine string, astFile *ast.File) error {
+func (operation *Operation) ParseResponseHeaderComment(commentLine string, astFile *dst.File) error {
 	var matches []string
 
 	if matches = responsePattern.FindStringSubmatch(commentLine); len(matches) != 5 {

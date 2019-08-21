@@ -1,8 +1,8 @@
 package api
 
 import (
+	"github.com/dsxack/swag/testdata/alias_type/data"
 	"github.com/gin-gonic/gin"
-	"github.com/swaggo/swag/testdata/alias_type/data"
 	"log"
 	"time"
 )

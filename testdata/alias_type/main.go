@@ -1,8 +1,8 @@
 package alias_type
 
 import (
+	"github.com/dsxack/swag/testdata/alias_type/api"
 	"github.com/gin-gonic/gin"
-	"github.com/swaggo/swag/testdata/alias_type/api"
 )
 
 // @title Swagger Example API

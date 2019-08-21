@@ -20,6 +20,9 @@ import (
 	"unicode"
 
 	"github.com/KyleBanks/depth"
+	"github.com/dave/dst"
+	"github.com/dave/dst/decorator"
+	"github.com/dave/dst/decorator/resolver/goast"
 	"github.com/go-openapi/jsonreference"
 	"github.com/go-openapi/spec"
 )
@@ -41,16 +44,16 @@ type Parser struct {
 	swagger *spec.Swagger
 
 	// files is a map that stores map[real_go_file_path][astFile]
-	files map[string]*ast.File
+	files map[string]*dst.File
 
-	// TypeDefinitions is a map that stores [package name][type name][*ast.TypeSpec]
-	TypeDefinitions map[string]map[string]*ast.TypeSpec
+	// TypeDefinitions is a map that stores [package name][type name][*dst.TypeSpec]
+	TypeDefinitions map[string]map[string]*dst.TypeSpec
 
 	// CustomPrimitiveTypes is a map that stores custom primitive types to actual golang types [type name][string]
 	CustomPrimitiveTypes map[string]string
 
-	// registerTypes is a map that stores [refTypeName][*ast.TypeSpec]
-	registerTypes map[string]*ast.TypeSpec
+	// registerTypes is a map that stores [refTypeName][*dst.TypeSpec]
+	registerTypes map[string]*dst.TypeSpec
 
 	PropNamingStrategy string
 
@@ -83,10 +86,10 @@ func New(options ...func(*Parser)) *Parser {
 				Definitions: make(map[string]spec.Schema),
 			},
 		},
-		files:                make(map[string]*ast.File),
-		TypeDefinitions:      make(map[string]map[string]*ast.TypeSpec),
+		files:                make(map[string]*dst.File),
+		TypeDefinitions:      make(map[string]map[string]*dst.TypeSpec),
 		CustomPrimitiveTypes: make(map[string]string),
-		registerTypes:        make(map[string]*ast.TypeSpec),
+		registerTypes:        make(map[string]*dst.TypeSpec),
 	}
 
 	for _, option := range options {
@@ -456,15 +459,15 @@ func getSchemes(commentLine string) []string {
 }
 
 // ParseRouterAPIInfo parses router api info for given astFile
-func (parser *Parser) ParseRouterAPIInfo(fileName string, astFile *ast.File) error {
+func (parser *Parser) ParseRouterAPIInfo(fileName string, astFile *dst.File) error {
 	for _, astDescription := range astFile.Decls {
-		switch astDeclaration := astDescription.(type) {
-		case *ast.FuncDecl:
-			if astDeclaration.Doc != nil && astDeclaration.Doc.List != nil {
+		switch dstDeclaration := astDescription.(type) {
+		case *dst.FuncDecl:
+			if dstDeclaration.Decorations() != nil && dstDeclaration.Decorations().Start != nil {
 				operation := NewOperation() //for per 'function' comment, create a new 'Operation' object
 				operation.parser = parser
-				for _, comment := range astDeclaration.Doc.List {
-					if err := operation.ParseComment(comment.Text, astFile); err != nil {
+				for _, comment := range dstDeclaration.Decorations().Start {
+					if err := operation.ParseComment(comment, astFile); err != nil {
 						return fmt.Errorf("ParseComment error in file %s :%+v", fileName, err)
 					}
 				}
@@ -500,15 +503,15 @@ func (parser *Parser) ParseRouterAPIInfo(fileName string, astFile *ast.File) err
 }
 
 // ParseType parses type info for given astFile.
-func (parser *Parser) ParseType(astFile *ast.File) {
+func (parser *Parser) ParseType(astFile *dst.File) {
 	if _, ok := parser.TypeDefinitions[astFile.Name.String()]; !ok {
-		parser.TypeDefinitions[astFile.Name.String()] = make(map[string]*ast.TypeSpec)
+		parser.TypeDefinitions[astFile.Name.String()] = make(map[string]*dst.TypeSpec)
 	}
 
 	for _, astDeclaration := range astFile.Decls {
-		if generalDeclaration, ok := astDeclaration.(*ast.GenDecl); ok && generalDeclaration.Tok == token.TYPE {
+		if generalDeclaration, ok := astDeclaration.(*dst.GenDecl); ok && generalDeclaration.Tok == token.TYPE {
 			for _, astSpec := range generalDeclaration.Specs {
-				if typeSpec, ok := astSpec.(*ast.TypeSpec); ok {
+				if typeSpec, ok := astSpec.(*dst.TypeSpec); ok {
 					typeName := fmt.Sprintf("%v", typeSpec.Type)
 					// check if its a custom primitive type
 					if IsGolangPrimitiveType(typeName) {
@@ -556,7 +559,7 @@ func (parser *Parser) parseDefinitions() error {
 // ParseDefinition parses given type spec that corresponds to the type under
 // given name and package, and populates swagger schema definitions registry
 // with a schema for the given type
-func (parser *Parser) ParseDefinition(pkgName, typeName string, typeSpec *ast.TypeSpec) error {
+func (parser *Parser) ParseDefinition(pkgName, typeName string, typeSpec *dst.TypeSpec) error {
 	refTypeName := fullTypeName(pkgName, typeName)
 	if _, isParsed := parser.swagger.Definitions[refTypeName]; isParsed {
 		Println("Skipping '" + refTypeName + "', already parsed.")
@@ -623,12 +626,12 @@ func fullTypeName(pkgName, typeName string) string {
 
 // parseTypeExpr parses given type expression that corresponds to the type under
 // given name and package, and returns swagger schema for it.
-func (parser *Parser) parseTypeExpr(pkgName, typeName string, typeExpr ast.Expr) (spec.Schema, error) {
+func (parser *Parser) parseTypeExpr(pkgName, typeName string, typeExpr dst.Expr) (spec.Schema, error) {
 	//TODO: return pointer to spec.Schema
 
 	switch expr := typeExpr.(type) {
 	// type Foo struct {...}
-	case *ast.StructType:
+	case *dst.StructType:
 		refTypeName := fullTypeName(pkgName, typeName)
 		if schema, isParsed := parser.swagger.Definitions[refTypeName]; isParsed {
 			return schema, nil
@@ -637,7 +640,18 @@ func (parser *Parser) parseTypeExpr(pkgName, typeName string, typeExpr ast.Expr)
 		return parser.parseStruct(pkgName, expr.Fields)
 
 	// type Foo Baz
-	case *ast.Ident:
+	case *dst.Ident:
+		if expr.Path != "" {
+			_, pkgName = path.Split(expr.Path)
+			typeName = expr.Name
+			refTypeName := fullTypeName(pkgName, typeName)
+			if _, isParsed := parser.swagger.Definitions[refTypeName]; !isParsed {
+				typedef := parser.TypeDefinitions[pkgName][typeName]
+				parser.ParseDefinition(pkgName, typeName, typedef)
+			}
+			return parser.swagger.Definitions[refTypeName], nil
+		}
+
 		refTypeName := fullTypeName(pkgName, expr.Name)
 		if _, isParsed := parser.swagger.Definitions[refTypeName]; !isParsed {
 			if typedef, ok := parser.TypeDefinitions[pkgName][expr.Name]; ok {
@@ -647,11 +661,11 @@ func (parser *Parser) parseTypeExpr(pkgName, typeName string, typeExpr ast.Expr)
 		return parser.swagger.Definitions[refTypeName], nil
 
 	// type Foo *Baz
-	case *ast.StarExpr:
+	case *dst.StarExpr:
 		return parser.parseTypeExpr(pkgName, typeName, expr.X)
 
 	// type Foo []Baz
-	case *ast.ArrayType:
+	case *dst.ArrayType:
 		itemSchema, err := parser.parseTypeExpr(pkgName, "", expr.Elt)
 		if err != nil {
 			return spec.Schema{}, err
@@ -665,21 +679,8 @@ func (parser *Parser) parseTypeExpr(pkgName, typeName string, typeExpr ast.Expr)
 			},
 		}, nil
 
-	// type Foo pkg.Bar
-	case *ast.SelectorExpr:
-		if xIdent, ok := expr.X.(*ast.Ident); ok {
-			pkgName = xIdent.Name
-			typeName = expr.Sel.Name
-			refTypeName := fullTypeName(pkgName, typeName)
-			if _, isParsed := parser.swagger.Definitions[refTypeName]; !isParsed {
-				typedef := parser.TypeDefinitions[pkgName][typeName]
-				parser.ParseDefinition(pkgName, typeName, typedef)
-			}
-			return parser.swagger.Definitions[refTypeName], nil
-		}
-
 	// type Foo map[string]Bar
-	case *ast.MapType:
+	case *dst.MapType:
 		itemSchema, err := parser.parseTypeExpr(pkgName, "", expr.Value)
 		if err != nil {
 			return spec.Schema{}, err
@@ -704,7 +705,7 @@ func (parser *Parser) parseTypeExpr(pkgName, typeName string, typeExpr ast.Expr)
 	}, nil
 }
 
-func (parser *Parser) parseStruct(pkgName string, fields *ast.FieldList) (spec.Schema, error) {
+func (parser *Parser) parseStruct(pkgName string, fields *dst.FieldList) (spec.Schema, error) {
 
 	extraRequired := make([]string, 0)
 	properties := make(map[string]spec.Schema)
@@ -756,7 +757,7 @@ type structField struct {
 	extensions   map[string]interface{}
 }
 
-func (parser *Parser) parseStructField(pkgName string, field *ast.Field) (map[string]spec.Schema, []string, error) {
+func (parser *Parser) parseStructField(pkgName string, field *dst.Field) (map[string]spec.Schema, []string, error) {
 	properties := map[string]spec.Schema{}
 
 	if field.Names == nil {
@@ -807,11 +808,11 @@ func (parser *Parser) parseStructField(pkgName string, field *ast.Field) (map[st
 		return properties, nil, nil
 	}
 	var desc string
-	if field.Doc != nil {
-		desc = strings.TrimSpace(field.Doc.Text())
+	if field != nil {
+		desc = strings.TrimSpace(strings.Join(field.Decorations().Start.All(), "\n"))
 	}
-	if desc == "" && field.Comment != nil {
-		desc = strings.TrimSpace(field.Comment.Text())
+	if desc == "" && field != nil && field.Decorations() != nil && field.Decorations().End != nil {
+		desc = strings.TrimSpace(strings.Join(field.Decorations().End.All(), "\n"))
 	}
 	// TODO: find package of schemaType and/or arrayType
 	if structField.crossPkg != "" {
@@ -852,9 +853,9 @@ func (parser *Parser) parseStructField(pkgName string, field *ast.Field) (map[st
 			}
 		} else if structField.arrayType == "object" {
 			// Anonymous struct
-			if astTypeArray, ok := field.Type.(*ast.ArrayType); ok { // if array
+			if astTypeArray, ok := field.Type.(*dst.ArrayType); ok { // if array
 				props := make(map[string]spec.Schema)
-				if expr, ok := astTypeArray.Elt.(*ast.StructType); ok {
+				if expr, ok := astTypeArray.Elt.(*dst.StructType); ok {
 					for _, field := range expr.Fields.List {
 						var fieldProps map[string]spec.Schema
 						fieldProps, _, err = parser.parseStructField(pkgName, field)
@@ -938,7 +939,7 @@ func (parser *Parser) parseStructField(pkgName string, field *ast.Field) (map[st
 			},
 		}
 
-		nestStruct, ok := field.Type.(*ast.StructType)
+		nestStruct, ok := field.Type.(*dst.StructType)
 		if ok {
 			props := map[string]spec.Schema{}
 			nestRequired := make([]string, 0)
@@ -982,17 +983,14 @@ func (parser *Parser) parseStructField(pkgName string, field *ast.Field) (map[st
 func getFieldType(field interface{}) (string, error) {
 
 	switch ftype := field.(type) {
-	case *ast.Ident:
+	case *dst.Ident:
+		if ftype.Path != "" {
+			_, pkgPath := path.Split(ftype.Path)
+			return fmt.Sprintf("%s.%s", pkgPath, ftype.Name), nil
+		}
 		return ftype.Name, nil
 
-	case *ast.SelectorExpr:
-		packageName, err := getFieldType(ftype.X)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("%s.%s", packageName, ftype.Sel.Name), nil
-
-	case *ast.StarExpr:
+	case *dst.StarExpr:
 		fullName, err := getFieldType(ftype.X)
 		if err != nil {
 			return "", err
@@ -1003,7 +1001,7 @@ func getFieldType(field interface{}) (string, error) {
 	return "", fmt.Errorf("unknown field type %#v", field)
 }
 
-func (parser *Parser) parseField(field *ast.Field) (*structField, error) {
+func (parser *Parser) parseField(field *dst.Field) (*structField, error) {
 	prop, err := getPropertyName(field.Type, parser)
 	if err != nil {
 		return nil, err
@@ -1319,8 +1317,8 @@ func (parser *Parser) visit(path string, f os.FileInfo, err error) error {
 
 func (parser *Parser) parseFile(path string) error {
 	if ext := filepath.Ext(path); ext == ".go" {
-		fset := token.NewFileSet() // positions are relative to fset
-		astFile, err := goparser.ParseFile(fset, path, nil, goparser.ParseComments)
+		dec := decorator.NewDecoratorWithImports(token.NewFileSet(), path, goast.New())
+		astFile, err := dec.ParseFile(path, nil, goparser.ParseComments)
 		if err != nil {
 			return fmt.Errorf("ParseFile error:%+v", err)
 		}
