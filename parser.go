@@ -7,6 +7,7 @@ import (
 	"go/build"
 	goparser "go/parser"
 	"go/token"
+	"golang.org/x/tools/go/packages"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -19,10 +20,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/KyleBanks/depth"
+	//"github.com/KyleBanks/depth"
 	"github.com/dave/dst"
 	"github.com/dave/dst/decorator"
-	"github.com/dave/dst/decorator/resolver/goast"
 	"github.com/go-openapi/jsonreference"
 	"github.com/go-openapi/spec"
 )
@@ -114,7 +114,7 @@ func (parser *Parser) ParseAPI(searchDir string, mainAPIFile string) error {
 		return err
 	}
 
-	var t depth.Tree
+	//var t depth.Tree
 
 	absMainAPIFilePath, err := filepath.Abs(filepath.Join(searchDir, mainAPIFile))
 	if err != nil {
@@ -122,18 +122,18 @@ func (parser *Parser) ParseAPI(searchDir string, mainAPIFile string) error {
 	}
 
 	if parser.ParseDependency {
-		pkgName, err := getPkgName(path.Dir(absMainAPIFilePath))
-		if err != nil {
-			return err
-		}
-		if err := t.Resolve(pkgName); err != nil {
-			return fmt.Errorf("pkg %s cannot find all dependencies, %s", pkgName, err)
-		}
-		for i := 0; i < len(t.Root.Deps); i++ {
-			if err := parser.getAllGoFileInfoFromDeps(&t.Root.Deps[i]); err != nil {
-				return err
-			}
-		}
+		//pkgName, err := getPkgName(path.Dir(absMainAPIFilePath))
+		//if err != nil {
+		//	return err
+		//}
+		//if err := t.Resolve(pkgName); err != nil {
+		//	return fmt.Errorf("pkg %s cannot find all dependencies, %s", pkgName, err)
+		//}
+		//for i := 0; i < len(t.Root.Deps); i++ {
+		//	if err := parser.getAllGoFileInfoFromDeps(&t.Root.Deps[i]); err != nil {
+		//		return err
+		//	}
+		//}
 	}
 
 	if err := parser.ParseGeneralAPIInfo(absMainAPIFilePath); err != nil {
@@ -1275,55 +1275,56 @@ func defineTypeOfExample(schemaType, arrayType, exampleValue string) (interface{
 
 // GetAllGoFileInfo gets all Go source files information for given searchDir.
 func (parser *Parser) getAllGoFileInfo(searchDir string) error {
-	return filepath.Walk(searchDir, parser.visit)
-}
-
-func (parser *Parser) getAllGoFileInfoFromDeps(pkg *depth.Pkg) error {
-	if pkg.Internal || !pkg.Resolved { // ignored internal and not resolved dependencies
-		return nil
+	cfg := &packages.Config{
+		Mode:       packages.LoadSyntax,
+		Context:    nil,
+		Dir:        searchDir,
+		Env:        nil,
+		BuildFlags: nil,
+		Fset:       nil,
+		ParseFile:  nil,
+		Tests:      false,
+		Overlay:    nil,
 	}
 
-	files, err := ioutil.ReadDir(pkg.SrcDir) // only parsing files in the dir(don't contains sub dir files)
+	pkgs, err := decorator.Load(cfg, "./...")
 	if err != nil {
 		return err
 	}
 
-	for _, f := range files {
-		if f.IsDir() {
-			continue
-		}
-
-		path := filepath.Join(pkg.SrcDir, f.Name())
-		if err := parser.parseFile(path); err != nil {
-			return err
-		}
-	}
-
-	for i := 0; i < len(pkg.Deps); i++ {
-		if err := parser.getAllGoFileInfoFromDeps(&pkg.Deps[i]); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return filepath.Walk(searchDir, parser.visit(pkgs))
 }
 
-func (parser *Parser) visit(path string, f os.FileInfo, err error) error {
-	if err := parser.Skip(path, f); err != nil {
-		return err
+func (parser *Parser) visit(pkgs []*decorator.Package) func(string, os.FileInfo, error) error {
+	return func(path string, f os.FileInfo, err error) error {
+		if err := parser.Skip(path, f); err != nil {
+			return err
+		}
+		return parser.parseFile(path, pkgs)
 	}
-	return parser.parseFile(path)
 }
 
-func (parser *Parser) parseFile(path string) error {
+func (parser *Parser) parseFile(path string, pkgs []*decorator.Package) error {
 	if ext := filepath.Ext(path); ext == ".go" {
-		dec := decorator.NewDecoratorWithImports(token.NewFileSet(), path, goast.New())
-		astFile, err := dec.ParseFile(path, nil, goparser.ParseComments)
+		pwd, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("ParseFile error:%+v", err)
+			return err
 		}
 
-		parser.files[path] = astFile
+		for _, pkg := range pkgs {
+			for i, absPath := range pkg.GoFiles {
+				relPath, err := filepath.Rel(pwd, absPath)
+				if err != nil {
+					return err
+				}
+				if relPath != path {
+					continue
+				}
+
+				parser.files[path] = pkg.Syntax[i]
+				return nil
+			}
+		}
 	}
 	return nil
 }

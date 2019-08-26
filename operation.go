@@ -481,10 +481,13 @@ func (operation *Operation) ParseSecurityComment(commentLine string) error {
 	return nil
 }
 
-// findTypeDef attempts to find the *dst.TypeSpec for a specific type given the
-// type's name and the package's import path
-// TODO: improve finding external pkg
-func findTypeDef(importPath, typeName string) (*dst.TypeSpec, error) {
+var pkgsCache []*decorator.Package
+
+func getCachedPkgs() ([]*decorator.Package, error) {
+	if pkgsCache != nil {
+		return pkgsCache, nil
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -492,17 +495,24 @@ func findTypeDef(importPath, typeName string) (*dst.TypeSpec, error) {
 
 	conf := &packages.Config{
 		Dir:  cwd,
-		Mode: packages.NeedSyntax,
+		Mode: packages.LoadSyntax,
 	}
 
-	//conf.Import(importPath)
+	pkgs, err := decorator.Load(conf, "all")
+	if err != nil {
+		return nil, err
+	}
 
-	//lprog, err := conf.Load()
-	//if err != nil {
-	//	return nil, err
-	//}
+	pkgsCache = pkgs
 
-	pkgs, err := decorator.Load(conf, "")
+	return pkgs, nil
+}
+
+// findTypeDef attempts to find the *dst.TypeSpec for a specific type given the
+// type's name and the package's import path
+// TODO: improve finding external pkg
+func findTypeDef(importPath, typeName string) (*dst.TypeSpec, error) {
+	pkgs, err := getCachedPkgs()
 	if err != nil {
 		return nil, err
 	}
