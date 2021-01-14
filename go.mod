@@ -8,7 +8,7 @@ require (
 	github.com/go-openapi/jsonreference v0.19.0
 	github.com/go-openapi/spec v0.19.0
 	github.com/satori/go.uuid v1.2.0
-	github.com/stretchr/testify v1.3.0
+	github.com/stretchr/testify v1.7.0
 	github.com/swaggo/files v0.0.0-20190704085106-630677cd5c14
 	github.com/swaggo/gin-swagger v1.2.0
 	github.com/urfave/cli v1.20.0
