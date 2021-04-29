@@ -1,0 +1,15 @@
+version: 2
+updates:
+- package-ecosystem: gomod
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "02:00"
+  open-pull-requests-limit: 10
+  ignore:
+  - dependency-name: github.com/go-openapi/spec
+    versions:
+    - 0.20.2
+  - dependency-name: github.com/gin-gonic/gin
+    versions:
+    - 1.6.3
