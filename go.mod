@@ -5,7 +5,7 @@ require (
 	github.com/dave/dst v0.23.1
 	github.com/ghodss/yaml v1.0.0
 	github.com/gin-gonic/gin v1.4.0
-	github.com/go-openapi/jsonreference v0.19.0
+	github.com/go-openapi/jsonreference v0.19.6
 	github.com/go-openapi/spec v0.19.0
 	github.com/satori/go.uuid v1.2.0
 	github.com/stretchr/testify v1.3.0
